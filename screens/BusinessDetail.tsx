@@ -7,6 +7,7 @@ import type { RootStackParamList } from '../App';
 import { supabase } from '../lib/supabase';
 import { Feather } from '@expo/vector-icons';
 import HeaderBar from '../components/HeaderBar';
+import { getClientToken } from '../lib/clientToken';
 
 type RouteProps = RouteProp<RootStackParamList, 'BusinessDetail'>;
 
@@ -55,6 +56,8 @@ export default function BusinessDetail() {
   const [loading, setLoading] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
 
+  const [clientToken, setClientToken] = useState<string | null>(null);
+
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<{ id: string; name: string | null } | null>(null);
 
@@ -69,7 +72,7 @@ export default function BusinessDetail() {
     if (!error && data && uid && data.owner_user_id === uid) setIsOwner(true);
     else setIsOwner(false);
   }, [businessId]);
-
+  
   const fetchSlots = useCallback(async (targetDate: Date = selectedDate) => {
     try {
       setLoading(true);
@@ -77,7 +80,7 @@ export default function BusinessDetail() {
       const { data, error } = await supabase.rpc('get_day_slots', {
         p_business: businessId,
         p_date: dateStr,
-        p_client_token: null,
+        p_client_token: clientToken ?? null,
       });
       if (error) {
         console.warn('[get_day_slots] error:', error.message, { businessId, dateStr });
@@ -103,6 +106,15 @@ export default function BusinessDetail() {
     checkOwner();
     fetchSlots(selectedDate);
   }, [checkOwner, fetchSlots, selectedDate]));
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const tok = await getClientToken();
+      if (mounted) setClientToken(tok);
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => { fetchSlots(selectedDate); }, [selectedDayIdx, fetchSlots, selectedDate]);
 
