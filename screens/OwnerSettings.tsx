@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, TextInput, FlatList } from 'react-native';
+import {
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
+  Alert, TextInput, KeyboardAvoidingView, Platform, Keyboard 
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import HeaderBar from '../components/HeaderBar';
 import { supabase } from '../lib/supabase';
@@ -29,6 +32,12 @@ function toMinutes(v: string) {
   const [h, m] = v.split(':').map(n => parseInt(n, 10));
   return h * 60 + m;
 }
+// 👉 Autoformateo a HH:MM aceptando solo dígitos
+function formatHHMMDigitsOnly(input: string) {
+  const digits = input.replace(/\D/g, '').slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return digits.slice(0, 2) + ':' + digits.slice(2);
+}
 
 export default function OwnerSettings() {
   const insets = useSafeAreaInsets();
@@ -46,6 +55,7 @@ export default function OwnerSettings() {
   const [currentDay, setCurrentDay] = useState<number>(1); // Lunes por defecto (1)
   const [newOpen, setNewOpen] = useState('');
   const [newClose, setNewClose] = useState('');
+  const [kbVisible, setKbVisible] = useState(false);
 
   // Cargar negocio del dueño + duración
   useEffect(() => {
@@ -83,6 +93,15 @@ export default function OwnerSettings() {
     })();
   }, []);
 
+  useEffect(() => {
+    const show = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hide = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const subShow = Keyboard.addListener(show, () => setKbVisible(true));
+    const subHide = Keyboard.addListener(hide, () => setKbVisible(false));
+    return () => { subShow.remove(); subHide.remove(); };
+  }, []);
+
   // Cargar plantilla semanal
   const reloadWeek = async (businessId: string) => {
     setWeekLoading(true);
@@ -100,10 +119,7 @@ export default function OwnerSettings() {
         const closes = (row.closes as string).slice(0,5);
         map[wd].push({ slot_id: row.slot_id, opens, closes });
       });
-      // Asegurar orden
-      for (let i=0;i<7;i++) {
-        map[i].sort((a,b) => toMinutes(a.opens) - toMinutes(b.opens));
-      }
+      for (let i=0;i<7;i++) map[i].sort((a,b) => toMinutes(a.opens) - toMinutes(b.opens));
       setWeek(map);
     }
     setWeekLoading(false);
@@ -151,7 +167,6 @@ export default function OwnerSettings() {
   };
 
   // ---- CRUD de tramos por día ----
-
   const listForDay = week[currentDay] || [];
 
   const addLocalSlot = () => {
@@ -166,9 +181,7 @@ export default function OwnerSettings() {
       Alert.alert('Rango inválido', 'La hora de apertura debe ser menor que la de cierre.');
       return;
     }
-    // Validar solapes contra la lista existente
     const arr = [...listForDay];
-    // Insertar en orden por opens
     let inserted = false;
     for (let i=0;i<arr.length;i++) {
       if (toMinutes(arr[i].opens) > mo) {
@@ -179,14 +192,13 @@ export default function OwnerSettings() {
     }
     if (!inserted) arr.push({ opens: op, closes: cl });
 
-    // Comprobar solapes
     for (let i=0;i<arr.length;i++) {
       const a = arr[i];
       const aS = toMinutes(a.opens), aE = toMinutes(a.closes);
       if (aS >= aE) { Alert.alert('Rango inválido', 'Apertura debe ser menor que cierre.'); return; }
       if (i>0) {
         const prev = arr[i-1];
-        const pS = toMinutes(prev.opens), pE = toMinutes(prev.closes);
+        const pE = toMinutes(prev.closes);
         if (aS < pE) { Alert.alert('Solape', 'Los tramos no pueden solaparse.'); return; }
       }
     }
@@ -204,7 +216,6 @@ export default function OwnerSettings() {
 
   const saveDay = async () => {
     if (!biz?.id) return;
-    // Validación final (ya debería estar bien, pero por si acaso)
     const arr = [...listForDay];
     for (let i=0;i<arr.length;i++) {
       const aS = toMinutes(arr[i].opens), aE = toMinutes(arr[i].closes);
@@ -229,7 +240,6 @@ export default function OwnerSettings() {
       return;
     }
     Alert.alert('Guardado', `${WEEK_FULL[currentDay]} actualizado.`);
-    // Refrescar desde servidor (para obtener ids, etc.)
     reloadWeek(biz.id);
   };
 
@@ -252,7 +262,7 @@ export default function OwnerSettings() {
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: Math.max(insets.bottom, 8) }]}>
+    <View style={[styles.container, { paddingTop: insets.top + 8, }]}>
       <HeaderBar
         title="Panel del dueño"
         rightLabel="Salir"
@@ -266,129 +276,139 @@ export default function OwnerSettings() {
           <Text>No se encontró un negocio asociado a tu cuenta.</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 16 }}>
-          {/* Duración de la cita */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Duración de la cita</Text>
-            <Text style={styles.cardDesc}>
-              Cambia la duración a 20/30/40 min. El cambio aplicará automáticamente <Text style={{ fontWeight: '700' }}>desde mañana</Text>.
-            </Text>
-
-            <View style={styles.infoBox}>
-              <Text style={styles.infoLine}>
-                Activa hoy: <Text style={styles.bold}>{biz.default_duration_minutes ?? '—'} min</Text>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top: 0}
+          style={{ flex: 1 }}
+        >
+          <ScrollView contentContainerStyle={{ padding: 15,   }} keyboardShouldPersistTaps="handled" contentInset={{ bottom: kbVisible ? 0 : insets.bottom}}>
+            {/* Duración de la cita */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Duración de la cita</Text>
+              <Text style={styles.cardDesc}>
+                Cambia la duración a 20/30/40 min. El cambio aplicará automáticamente <Text style={{ fontWeight: '700' }}>desde mañana</Text>.
               </Text>
-              {pendingText && <Text style={[styles.infoLine, { color: '#555' }]}>{pendingText}</Text>}
-            </View>
 
-            <View style={styles.radioRow}>
-              {DURATIONS.map((m) => {
-                const checked = selectedDur === m;
-                return (
-                  <TouchableOpacity key={m} style={styles.radioItem} onPress={() => setSelectedDur(m)}>
-                    <View style={[styles.radioCircle, checked && styles.radioCircleChecked]}>
-                      {checked && <View style={styles.radioDot} />}
-                    </View>
-                    <Text style={styles.radioLabel}>{m} min</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+              <View style={styles.infoBox}>
+                <Text style={styles.infoLine}>
+                  Activa hoy: <Text style={styles.bold}>{biz.default_duration_minutes ?? '—'} min</Text>
+                </Text>
+                {pendingText && <Text style={[styles.infoLine, { color: '#555' }]}>{pendingText}</Text>}
+              </View>
 
-            <TouchableOpacity disabled={savingDur || !selectedDur} onPress={saveDuration} style={[styles.primaryBtn, savingDur && { opacity: 0.6 }]}>
-              <Text style={styles.primaryBtnText}>{savingDur ? 'Guardando…' : 'Guardar'}</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Plantilla semanal */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Plantilla semanal</Text>
-            <Text style={styles.cardDesc}>
-              Define tus tramos por día. Los tramos no pueden solaparse y deben usar formato HH:MM.
-            </Text>
-
-            {/* Selector de día */}
-            <View style={styles.dayRow}>
-              {WEEK_LABELS.map((lab, idx) => (
-                <TouchableOpacity key={idx} onPress={() => setCurrentDay(idx)} style={[styles.dayChip, currentDay === idx && styles.dayChipSel]}>
-                  <Text style={[styles.dayChipText, currentDay === idx && styles.dayChipTextSel]}>{lab}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {weekLoading ? (
-              <View style={{ paddingVertical: 10 }}><ActivityIndicator /></View>
-            ) : (
-              <>
-                {/* Lista de tramos del día */}
-                {listForDay.length === 0 ? (
-                  <View style={{ paddingVertical: 6 }}>
-                    <Text style={{ color: '#666' }}>No hay tramos para {WEEK_FULL[currentDay]}.</Text>
-                  </View>
-                ) : (
-                  <View>
-                    {listForDay.map((item, index) => (
-                      <View key={`${currentDay}-${index}`} style={styles.slotRow}>
-                        <Text style={styles.slotText}>{item.opens}–{item.closes}</Text>
-                        <TouchableOpacity onPress={() => deleteLocalSlot(index)} style={styles.deleteBtn}>
-                          <Feather name="trash-2" size={16} color="#fff" />
-                        </TouchableOpacity>
+              <View style={styles.radioRow}>
+                {DURATIONS.map((m) => {
+                  const checked = selectedDur === m;
+                  return (
+                    <TouchableOpacity key={m} style={styles.radioItem} onPress={() => setSelectedDur(m)}>
+                      <View style={[styles.radioCircle, checked && styles.radioCircleChecked]}>
+                        {checked && <View style={styles.radioDot} />}
                       </View>
-                    ))}
+                      <Text style={styles.radioLabel}>{m} min</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <TouchableOpacity disabled={savingDur || !selectedDur} onPress={saveDuration} style={[styles.primaryBtn, savingDur && { opacity: 0.6 }]}>
+                <Text style={styles.primaryBtnText}>{savingDur ? 'Guardando…' : 'Guardar'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Plantilla semanal */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Plantilla semanal</Text>
+              <Text style={styles.cardDesc}>
+                Define tus tramos por día. Los tramos no pueden solaparse y deben usar formato HH:MM.
+              </Text>
+
+              {/* Selector de día */}
+              <View style={styles.dayRow}>
+                {WEEK_LABELS.map((lab, idx) => (
+                  <TouchableOpacity key={idx} onPress={() => setCurrentDay(idx)} style={[styles.dayChip, currentDay === idx && styles.dayChipSel]}>
+                    <Text style={[styles.dayChipText, currentDay === idx && styles.dayChipTextSel]}>{lab}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {weekLoading ? (
+                <View style={{ paddingVertical: 10 }}><ActivityIndicator /></View>
+              ) : (
+                <>
+                  {/* Lista de tramos del día */}
+                  {listForDay.length === 0 ? (
+                    <View style={{ paddingVertical: 6 }}>
+                      <Text style={{ color: '#666' }}>No hay tramos para {WEEK_FULL[currentDay]}.</Text>
+                    </View>
+                  ) : (
+                    <View>
+                      {listForDay.map((item, index) => (
+                        <View key={`${currentDay}-${index}`} style={styles.slotRow}>
+                          <Text style={styles.slotText}>{item.opens}–{item.closes}</Text>
+                          <TouchableOpacity onPress={() => deleteLocalSlot(index)} style={styles.deleteBtn}>
+                            <Feather name="trash-2" size={16} color="#fff" />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  {/* Formulario añadir tramo */}
+                  <View style={styles.addRow}>
+                    <TextInput
+                      placeholder="HH:MM"
+                      value={newOpen}
+                      onChangeText={(t) => setNewOpen(formatHHMMDigitsOnly(t))}
+                      style={styles.input}
+                      keyboardType={Platform.OS === 'ios' ? 'number-pad' : 'numeric'}
+                      inputMode="numeric"
+                      maxLength={5}
+                      autoCapitalize="none"
+                    />
+                    <Text style={{ marginHorizontal: 6, color: '#666' }}>–</Text>
+                    <TextInput
+                      placeholder="HH:MM"
+                      value={newClose}
+                      onChangeText={(t) => setNewClose(formatHHMMDigitsOnly(t))}
+                      style={styles.input}
+                      keyboardType={Platform.OS === 'ios' ? 'number-pad' : 'numeric'}
+                      inputMode="numeric"
+                      maxLength={5}
+                      autoCapitalize="none"
+                    />
+                    <TouchableOpacity onPress={addLocalSlot} style={styles.addBtn}>
+                      <Text style={styles.addBtnText}>Añadir</Text>
+                    </TouchableOpacity>
                   </View>
-                )}
 
-                {/* Formulario añadir tramo */}
-                <View style={styles.addRow}>
-                  <TextInput
-                    placeholder="HH:MM"
-                    value={newOpen}
-                    onChangeText={setNewOpen}
-                    style={styles.input}
-                    keyboardType="numbers-and-punctuation"
-                    autoCapitalize="none"
-                  />
-                  <Text style={{ marginHorizontal: 6, color: '#666' }}>–</Text>
-                  <TextInput
-                    placeholder="HH:MM"
-                    value={newClose}
-                    onChangeText={setNewClose}
-                    style={styles.input}
-                    keyboardType="numbers-and-punctuation"
-                    autoCapitalize="none"
-                  />
-                  <TouchableOpacity onPress={addLocalSlot} style={styles.addBtn}>
-                    <Text style={styles.addBtnText}>Añadir</Text>
-                  </TouchableOpacity>
-                </View>
+                  {/* Acciones */}
+                  <View style={styles.actionsRow}>
+                    <TouchableOpacity disabled={weekSaving} onPress={saveDay} style={[styles.primaryBtn, { flex: 1 }, weekSaving && { opacity: 0.6 }]}>
+                      <Text style={styles.primaryBtnText}>{weekSaving ? 'Guardando…' : `Guardar ${WEEK_FULL[currentDay]}`}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity disabled={weekSaving} onPress={resetDay} style={[styles.resetBtn, { marginLeft: 8 }]}>
+                      <Text style={styles.resetBtnText}>Restablecer día</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
 
-                {/* Acciones */}
-                <View style={styles.actionsRow}>
-                  <TouchableOpacity disabled={weekSaving} onPress={saveDay} style={[styles.primaryBtn, { flex: 1 }, weekSaving && { opacity: 0.6 }]}>
-                    <Text style={styles.primaryBtnText}>{weekSaving ? 'Guardando…' : `Guardar ${WEEK_FULL[currentDay]}`}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity disabled={weekSaving} onPress={resetDay} style={[styles.resetBtn, { marginLeft: 8 }]}>
-                    <Text style={styles.resetBtnText}>Restablecer día</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </View>
+            {/* Excepciones (placeholder) */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Excepciones por día</Text>
+              <Text style={styles.cardDesc}>Cierra un día o define horario especial. (Siguiente paso)</Text>
+              <View style={styles.placeholderBox}><Text style={styles.placeholderText}>[Editor de excepciones por fecha]</Text></View>
+            </View>
 
-          {/* Excepciones (placeholder) */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Excepciones por día</Text>
-            <Text style={styles.cardDesc}>Cierra un día o define horario especial. (Siguiente paso)</Text>
-            <View style={styles.placeholderBox}><Text style={styles.placeholderText}>[Editor de excepciones por fecha]</Text></View>
-          </View>
-
-          {/* Vacaciones (placeholder) */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Vacaciones / Cierres por rango</Text>
-            <Text style={styles.cardDesc}>Marca un rango de cierre con mensaje. (Siguiente paso)</Text>
-            <View style={styles.placeholderBox}><Text style={styles.placeholderText}>[Gestor de rangos de cierre]</Text></View>
-          </View>
-        </ScrollView>
+            {/* Vacaciones (placeholder) */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Vacaciones / Cierres por rango</Text>
+              <Text style={styles.cardDesc}>Marca un rango de cierre con mensaje. (Siguiente paso)</Text>
+              <View style={styles.placeholderBox}><Text style={styles.placeholderText}>[Gestor de rangos de cierre]</Text></View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       )}
     </View>
   );
@@ -417,8 +437,17 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontWeight: '700' },
 
   // ---------- Semana ----------
-  dayRow: { flexDirection: 'row', marginBottom: 10, },
-  dayChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 10, backgroundColor: '#f2f2f2', marginRight: 6 },
+  dayRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between', // 7 chips en una fila sin desbordar
+    marginBottom: 10,
+  },
+  dayChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 10, // compacto para "Do" y "Sa"
+    borderRadius: 10,
+    backgroundColor: '#f2f2f2',
+  },
   dayChipSel: { backgroundColor: '#111' },
   dayChipText: { color: '#333', fontWeight: '800' },
   dayChipTextSel: { color: '#fff', fontWeight: '800' },
