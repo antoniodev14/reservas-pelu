@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, FlatList, Image, Pressable, Modal,
-  TouchableOpacity, ActivityIndicator, StyleSheet
+  TouchableOpacity, ActivityIndicator, StyleSheet, Platform,
+  KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase';
 import { useNavigation } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Feather } from '@expo/vector-icons';
+import HeaderBar from '../components/HeaderBar';
 
 type Business = {
   id: string;
@@ -18,26 +21,24 @@ type Business = {
 };
 
 export default function Home() {
+  const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [ownedIds, setOwnedIds] = useState<Set<string>>(new Set());
 
-  // Login modal
   const [loginVisible, setLoginVisible] = useState(false);
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  // Search + suggestions
   const [query, setQuery] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [suggestions, setSuggestions] = useState<Business[]>([]);
   const [list, setList] = useState<Business[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Sesión actual y cambios
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -67,7 +68,6 @@ export default function Home() {
     return () => { sub.subscription.unsubscribe(); };
   }, []);
 
-  // Cargar listado inicial
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -84,7 +84,6 @@ export default function Home() {
 
   const onChangeQuery = (t: string) => { setQuery(t); setShowSuggestions(true); };
 
-  // Autocompletado
   useEffect(() => {
     const q = query.trim();
     if (!showSuggestions || q.length < 2) { setSuggestions([]); return; }
@@ -168,23 +167,19 @@ export default function Home() {
   };
 
   return (
-    <View style={styles.container}>
-      {/* Header: si hay sesión, mostrar SOLO “Salir”; si no, botón “Iniciar sesión” */}
-      <View style={styles.header}>
-        <View style={{width:48}} />
-        <Text style={styles.appTitle}>Reservas Pelu</Text>
-        {sessionEmail ? (
-          <TouchableOpacity onPress={async () => { await supabase.auth.signOut(); }} style={styles.loginBtnAlt}>
-            <Text style={styles.loginText}>Salir</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity onPress={() => setLoginVisible(true)} style={styles.loginBtn}>
-            <Text style={styles.loginText}>Iniciar sesión</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+    <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: Math.max(insets.bottom, 8) }]}>
+      <HeaderBar
+        title="Reservas Pelu"
+        rightLabel={sessionEmail ? 'Salir' : 'Iniciar sesión'}
+        onRightPress={async () => {
+          if (sessionEmail) {
+            await supabase.auth.signOut();
+          } else {
+            setLoginVisible(true);
+          }
+        }}
+      />
 
-      {/* Search + Sugerencias */}
       <View style={styles.searchWrap}>
         <TextInput
           placeholder="Buscar peluquería o zona…"
@@ -206,7 +201,6 @@ export default function Home() {
         )}
       </View>
 
-      {/* Lista */}
       {loading ? (
         <View style={styles.loading}>
           <ActivityIndicator />
@@ -226,40 +220,36 @@ export default function Home() {
         />
       )}
 
-      {/* Login Modal (solo si no hay sesión) */}
       <Modal visible={loginVisible} animationType="slide" transparent onRequestClose={() => setLoginVisible(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Acceder</Text>
-            <TextInput placeholder="Correo" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
-            <TextInput placeholder="Contraseña" value={pass} onChangeText={setPass} secureTextEntry style={styles.input} />
-            {!!loginError && <Text style={styles.errorText}>{loginError}</Text>}
-            <TouchableOpacity disabled={loggingIn} onPress={onLogin} style={styles.primaryBtn}>
-              <Text style={styles.primaryBtnText}>{loggingIn ? 'Accediendo…' : 'Acceder'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setLoginVisible(false)} style={styles.linkBtn}>
-              <Text style={styles.linkText}>Cancelar</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
+          style={styles.modalAvoider}
+        >
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+            <View style={styles.modalBackdrop}>
+              <View style={[styles.modalCard, { paddingBottom: 10 + Math.max(insets.bottom, 10) }]}>
+                <Text style={styles.modalTitle}>Acceder</Text>
+                <TextInput placeholder="Correo" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+                <TextInput placeholder="Contraseña" value={pass} onChangeText={setPass} secureTextEntry style={styles.input} />
+                {!!loginError && <Text style={styles.errorText}>{loginError}</Text>}
+                <TouchableOpacity disabled={loggingIn} onPress={onLogin} style={styles.primaryBtn}>
+                  <Text style={styles.primaryBtnText}>{loggingIn ? 'Accediendo…' : 'Acceder'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setLoginVisible(false)} style={styles.linkBtn}>
+                  <Text style={styles.linkText}>Cancelar</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: 56, backgroundColor: '#fff' },
-
-  header: {
-    paddingHorizontal: 16, marginBottom: 12,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'
-  },
-
-  appTitle: { fontSize: 20, fontWeight: '700' },
-
-  loginBtn: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: '#111' },
-  loginBtnAlt: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: '#111' },
-  loginText: { color: '#fff', fontWeight: '600' },
+  container: { flex: 1, backgroundColor: '#fff' },
 
   searchWrap: { paddingHorizontal: 16, marginBottom: 8 },
   searchInput: { backgroundColor: '#f2f2f2', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
@@ -287,7 +277,9 @@ const styles = StyleSheet.create({
   cardCity: { fontSize: 12, color: '#666', marginTop: 2 },
   chevron: { fontSize: 20, fontWeight: '700', color: '#999', marginLeft: 8 },
 
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.2)', alignItems: 'center', justifyContent: 'center', padding: 16 },
+  // Modal + teclado
+  modalAvoider: { flex: 1 },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)', alignItems: 'center', justifyContent: 'center', padding: 16 },
   modalCard: { width: '100%', maxWidth: 420, borderRadius: 16, backgroundColor: '#fff', padding: 16 },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 10 },
   input: { backgroundColor: '#f3f3f3', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginVertical: 6 },
