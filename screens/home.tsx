@@ -14,6 +14,9 @@ import {
   Alert,
 } from 'react-native';
 import { supabase } from '../lib/supabase';
+import { useNavigation } from '@react-navigation/native';
+import type { RootStackParamList } from '../App';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 type Business = {
   id: string;
@@ -132,9 +135,11 @@ export default function Home() {
     if (!error) setLoginVisible(false);
   };
 
+  // dentro del componente:
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
   const openBusiness = (b: Business) => {
-    // Placeholder: más adelante navegaremos al Detalle de Peluquería
-    Alert.alert('Detalle', `Abrir detalle: ${b.name}`);
+    navigation.navigate('BusinessDetail', { businessId: b.id, name: b.name });
   };
 
   const onPickSuggestion = (s: Business) => {
