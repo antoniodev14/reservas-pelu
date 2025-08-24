@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
-import { useRoute, useNavigation } from '@react-navigation/native';
+import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
 import { supabase } from '../lib/supabase';
-import { getOrCreateClientToken } from '../lib/clientToken'; // si no quieres usarlo, puedes comentar y pasar null en RPC
+// Si más adelante quieres "Tu reserva", reactivas el token.
+// import { getOrCreateClientToken } from '../lib/clientToken';
 
 type RouteProps = RouteProp<RootStackParamList, 'BusinessDetail'>;
 
@@ -15,6 +16,9 @@ type Slot = {
   is_mine: boolean;
   mine_name: string | null;
   mine_phone: string | null;
+  reservation_id: string | null;
+  occupant_name: string | null;
+  occupant_phone: string | null;
 };
 
 function fmtHM(dateIso: string) {
@@ -39,52 +43,72 @@ export default function BusinessDetail() {
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(new Date(), i)), []);
   const selectedDate = days[selectedDayIdx];
 
-  const [clientToken, setClientToken] = useState<string | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
 
-  // Token (puedes comentar este useEffect si no quieres is_mine y usar null en RPC)
-  useEffect(() => {
-    (async () => {
-      const t = await getOrCreateClientToken();
-      setClientToken(t);
-    })();
-  }, []);
+  // Detectar si el usuario autenticado es el dueño de este negocio
+  const checkOwner = useCallback(async () => {
+    const [{ data: sess }, { data, error }] = await Promise.all([
+      supabase.auth.getSession(),
+      supabase.from('businesses').select('owner_user_id').eq('id', businessId).single()
+    ]);
+    const uid = sess?.session?.user?.id;
+    if (!error && data && uid && data.owner_user_id === uid) setIsOwner(true);
+    else setIsOwner(false);
+  }, [businessId]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // Si NO quieres is_mine aún, usa: const tokenToSend = null;
-      const tokenToSend = clientToken; // ó null
-      if (tokenToSend === undefined) return; // espera a que esté definido (null o string)
-      try {
-        setLoading(true);
-        const dateStr = ymd(selectedDate);
-        const { data, error } = await supabase.rpc('get_day_slots', {
-          p_business: businessId,
-          p_date: dateStr,
-          p_client_token: null, // puede ser null
-        });
-
-        if (error) {
-          console.warn('[get_day_slots] error:', error.message, { businessId, dateStr });
-          if (!cancelled) setSlots([]);
-        } else if (Array.isArray(data)) {
-          console.log('[get_day_slots] rows:', data.length, 'ej:', data[0]);
-          if (!cancelled) setSlots(data as Slot[]);
-        } else {
-          console.warn('[get_day_slots] respuesta no array:', data);
-          if (!cancelled) setSlots([]);
-        }
-      } catch (e: any) {
-        console.warn('[get_day_slots] EXCEPTION:', e?.message || e);
-        if (!cancelled) setSlots([]);
-      } finally {
-        if (!cancelled) setLoading(false);
+  // Cargar slots (NO dependemos de client_token para estabilidad)
+  const fetchSlots = useCallback(async (targetDate: Date = selectedDate) => {
+    try {
+      setLoading(true);
+      const dateStr = ymd(targetDate);
+      const { data, error } = await supabase.rpc('get_day_slots', {
+        p_business: businessId,
+        p_date: dateStr,
+        p_client_token: null, // estable; más adelante, si quieres, pasamos el client_token real
+      });
+      if (error) {
+        console.warn('[get_day_slots] error:', error.message, { businessId, dateStr });
+        setSlots([]);
+      } else if (Array.isArray(data)) {
+        setSlots(data as Slot[]);
+      } else {
+        setSlots([]);
       }
-    })();
-    return () => { cancelled = true; };
-  }, [businessId, selectedDayIdx, clientToken]);
+    } catch (e: any) {
+      console.warn('[get_day_slots] EXCEPTION:', e?.message || e);
+      setSlots([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [businessId, selectedDate]);
+
+  // Recargar al entrar en la pantalla
+  useFocusEffect(useCallback(() => {
+    checkOwner();
+    fetchSlots(selectedDate);
+  }, [checkOwner, fetchSlots, selectedDate]));
+
+  // Recargar cuando cambia el día
+  useEffect(() => { fetchSlots(selectedDate); }, [selectedDayIdx, fetchSlots, selectedDate]);
+
+  // Cancelación del dueño (✕)
+  const onOwnerCancel = useCallback(async (reservationId: string) => {
+    try {
+      const { error } = await supabase.rpc('owner_cancel_reservation', {
+        p_business: businessId,
+        p_reservation: reservationId,
+      });
+      if (error) {
+        console.warn('owner_cancel_reservation error:', error.message);
+        return;
+      }
+      await fetchSlots(); // refresca
+    } catch (e: any) {
+      console.warn('onOwnerCancel EX:', e?.message || e);
+    }
+  }, [businessId, fetchSlots]);
 
   const renderSlot = ({ item }: { item: Slot }) => {
     const start = fmtHM(item.start_at);
@@ -93,14 +117,26 @@ export default function BusinessDetail() {
 
     return (
       <View style={[styles.slotRow, busy ? styles.slotBusy : styles.slotFree]}>
-        <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
-          <Text style={styles.slotTime}>{start}</Text>
-          <Text style={styles.slotTo}>{'  -  '}</Text>
-          <Text style={styles.slotTimeEnd}>{end}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent:'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={styles.slotTime}>{start}</Text>
+            <Text style={styles.slotTo}>{'  -  '}</Text>
+            <Text style={styles.slotTimeEnd}>{end}</Text>
+          </View>
+
+          {isOwner && busy && item.reservation_id && (
+            <TouchableOpacity onPress={() => onOwnerCancel(item.reservation_id!)} style={styles.cancelBtn}>
+              <Text style={styles.cancelBtnText}>✕</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {busy ? (
-          item.is_mine ? (
+          isOwner ? (
+            <Text style={styles.ownerPII}>
+              {item.occupant_name || 'Reserva'}{item.occupant_phone ? ` · ${item.occupant_phone}` : ''}
+            </Text>
+          ) : item.is_mine ? (
             <Text style={styles.mineText}>
               Tu reserva{item.mine_name ? ` · ${item.mine_name}` : ''}{item.mine_phone ? ` · ${item.mine_phone}` : ''}
             </Text>
@@ -114,6 +150,22 @@ export default function BusinessDetail() {
     );
   };
 
+  const daysHeader = (
+    <View style={styles.daysRow}>
+      {days.map((d, i) => {
+        const wd = weekdayShort[d.getDay()];
+        const dayNum = d.getDate();
+        const sel = i === selectedDayIdx;
+        return (
+          <TouchableOpacity key={i} onPress={() => setSelectedDayIdx(i)} style={[styles.dayChip, sel && styles.dayChipSel]}>
+            <Text style={[styles.dayChipText, sel && styles.dayChipTextSel]}>{wd}</Text>
+            <Text style={[styles.dayChipSub, sel && styles.dayChipTextSel]}>{dayNum}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -125,22 +177,8 @@ export default function BusinessDetail() {
         <View style={{ width: 64 }} />
       </View>
 
-      {/* Semana */}
-      <View style={styles.daysRow}>
-        {days.map((d, i) => {
-          const wd = weekdayShort[d.getDay()];
-          const dayNum = d.getDate();
-          const sel = i === selectedDayIdx;
-          return (
-            <TouchableOpacity key={i} onPress={() => setSelectedDayIdx(i)} style={[styles.dayChip, sel && styles.dayChipSel]}>
-              <Text style={[styles.dayChipText, sel && styles.dayChipTextSel]}>{wd}</Text>
-              <Text style={[styles.dayChipSub, sel && styles.dayChipTextSel]}>{dayNum}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      {daysHeader}
 
-      {/* Slots */}
       {loading ? (
         <View style={styles.loading}>
           <ActivityIndicator />
@@ -165,12 +203,19 @@ export default function BusinessDetail() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, paddingTop: 56, backgroundColor: '#fff' },
-  header: { paddingHorizontal: 16, marginBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  header: {
+    paddingHorizontal: 16, marginBottom: 8,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'
+  },
   back: { fontSize: 14, color: '#333' },
   title: { fontSize: 18, fontWeight: '700' },
 
   daysRow: { flexDirection: 'row', paddingHorizontal: 12, marginVertical: 6 },
-  dayChip: { alignItems: 'center', justifyContent: 'center', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: '#f2f2f2', marginHorizontal: 4 },
+  dayChip: {
+    alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10,
+    backgroundColor: '#f2f2f2', marginHorizontal: 4
+  },
   dayChipSel: { backgroundColor: '#111' },
   dayChipText: { color: '#333', fontWeight: '700' },
   dayChipTextSel: { color: '#fff' },
@@ -178,7 +223,10 @@ const styles = StyleSheet.create({
 
   loading: { padding: 16, alignItems: 'center' },
 
-  slotRow: { marginHorizontal: 16, marginTop: 10, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1 },
+  slotRow: {
+    marginHorizontal: 16, marginTop: 10, borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1
+  },
   slotFree: { borderColor: '#cfead6', backgroundColor: '#f3fff6' },
   slotBusy: { borderColor: '#f1c7c7', backgroundColor: '#fff5f5' },
 
@@ -189,4 +237,9 @@ const styles = StyleSheet.create({
   freeText: { marginTop: 4, color: '#2e7d32', fontWeight: '600' },
   busyText: { marginTop: 4, color: '#b71c1c', fontWeight: '600' },
   mineText: { marginTop: 4, color: '#1a237e', fontWeight: '700' },
+
+  // Dueño
+  cancelBtn: { backgroundColor:'#111', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  cancelBtnText: { color:'#fff', fontWeight:'800', fontSize:16 },
+  ownerPII: { marginTop: 4, color:'#111', fontWeight:'700' },
 });
