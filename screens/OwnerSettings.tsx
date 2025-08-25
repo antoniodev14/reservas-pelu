@@ -360,7 +360,7 @@ export default function OwnerSettings() {
 
             {/* Vacaciones / cierres por rango */}
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Vacaciones / Cierres por rango</Text>
+              <Text style={styles.cardTitle}>Vacaciones / Cierres</Text>
               <Text style={styles.cardDesc}>Bloquea fechas (formato <Text style={{fontWeight:'800'}}>DD-MM-YYYY</Text>) con mensaje opcional.</Text>
 
               {cvLoading ? <ActivityIndicator/> : closures.length===0 ? (
@@ -395,14 +395,6 @@ export default function OwnerSettings() {
                 <Text style={styles.primaryBtnText}>{cvLoading ? 'Añadiendo…' : 'Añadir'}</Text>
               </TouchableOpacity>
             </View>
-
-            {/* Excepciones (placeholder) */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Excepciones por día</Text>
-              <Text style={styles.cardDesc}>(Próximo paso: festivos puntuales, horarios especiales…)</Text>
-              <View style={styles.placeholderBox}><Text style={styles.placeholderText}>[Editor de excepciones por fecha]</Text></View>
-            </View>
-
           </ScrollView>
         </KeyboardAvoidingView>
       )}

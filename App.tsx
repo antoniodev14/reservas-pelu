@@ -10,6 +10,7 @@ import { Feather } from '@expo/vector-icons';
 import Home from './screens/home';
 import BusinessDetail from './screens/BusinessDetail';
 import OwnerSettings from './screens/OwnerSettings';
+import OwnerRequests from './screens/OwnerRequests';
 import { supabase } from './lib/supabase';
 
 export type RootStackParamList = {
@@ -21,6 +22,7 @@ export type RootStackParamList = {
 export type OwnerTabParamList = {
   OwnerHome: undefined;
   OwnerManage: undefined;
+  OwnerRequests: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -50,6 +52,15 @@ function OwnerTabs() {
         options={{
           tabBarLabel: 'Gestion',
           tabBarIcon: ({ color, size }) => <Feather name="user" color={color} size={size} />,
+        }}
+      />
+      <Tab.Screen
+        name="OwnerRequests"
+        component={OwnerRequests}
+        options={{
+          title: 'Solicitudes',
+          // icono de “solicitud/entrada”: usa el que más te guste
+          tabBarIcon: ({ color, size }) => <Feather name="inbox" color={color} size={size} />,
         }}
       />
     </Tab.Navigator>

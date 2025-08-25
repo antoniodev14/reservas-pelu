@@ -12,6 +12,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Feather } from '@expo/vector-icons';
 import HeaderBar from '../components/HeaderBar';
 
+
 type Business = {
   id: string;
   name: string;
