@@ -116,7 +116,7 @@ export default function OwnerRequests() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: 8 }]}>
-      <HeaderBar title="Solicitudes" />
+      <HeaderBar title="Solicitudes" rightLabel="Salir" onRightPress={async ()=>{ await supabase.auth.signOut(); }} />
       {loading ? (
         <View style={styles.center}><ActivityIndicator /><Text style={{ marginTop: 8 }}>Cargando solicitudes…</Text></View>
       ) : items.length === 0 ? (

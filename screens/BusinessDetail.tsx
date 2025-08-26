@@ -70,6 +70,7 @@ export default function BusinessDetail({ route, navigation }: Props) {
   const maxDate = useMemo(() => addDays(minDate, 60), [minDate]);
 
   const [loading, setLoading] = useState(true);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [loadingDay, setLoadingDay] = useState(false);
   const [slots, setSlots] = useState<SlotRow[]>([]);
   const [dayClosed, setDayClosed] = useState<{ closed: boolean; message?: string }>({ closed: false });
@@ -80,6 +81,7 @@ export default function BusinessDetail({ route, navigation }: Props) {
 
   // banner "Tu cita"
   const [myReservation, setMyReservation] = useState<MyReservation | null>(null);
+  const [myReservations, setMyReservations] = useState<MyReservation[]>([]);
 
   // modal de reserva
   const [reserveOpen, setReserveOpen] = useState(false);
@@ -151,22 +153,66 @@ export default function BusinessDetail({ route, navigation }: Props) {
     setLoadingDay(false);
   }, [businessId, dateYmd]);
 
+  useEffect(() => {
+    const isToday = stripTime(currentDate).getTime() === stripTime(new Date()).getTime();
+    if (!isToday) return;
+    const id = setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, [currentDate]);
   useEffect(() => { if (!loading) reloadDay(); }, [loading, reloadDay]);
   useEffect(() => { if (!loading) reloadDay(); }, [dateYmd]);
 
+  // Cancelar clientes cita X
+  const cancelMineFromSlot = async (slot: SlotRow) => {
+    try {
+      if (!slot.reservation_id) return; // necesita el id (lo expone el backend arriba)
+      const token = await getClientTokenOrNull();
+      if (!token) return;
+      const { data, error } = await supabase.rpc('cancel_reservation_by_token_json', {
+        payload: { p_reservation: slot.reservation_id, p_client_token: token }
+      });
+      if (error || data !== true) {
+        Alert.alert('Error', error?.message ?? 'No se pudo cancelar la reserva.');
+        return;
+      }
+      // refresca UI
+      await Promise.all([reloadDay(), reloadMyReservation()]);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'No se pudo cancelar la reserva.');
+    }
+  };
   // cargar "mi cita" (persistente) — futuras
   const reloadMyReservation = useCallback(async () => {
     const token = await getClientTokenOrNull();
-    if (!token) { setMyReservation(null); return; }
-    const { data, error } = await supabase.rpc('get_my_reservations', {
-      p_business: businessId,
-      p_client_token: token,
+    if (!token) { setMyReservations([]); return; }
+
+    const { data, error } = await supabase.rpc('get_my_reservations_for_business_json_v1', {
+      payload: { p_business: businessId, p_client_token: token }
     });
-    if (error) { console.warn('get_my_reservations', error.message); setMyReservation(null); return; }
-    const future = (data as any[]).filter(r => new Date(r.start_at).getTime() > Date.now());
-    future.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
-    setMyReservation(future[0] ?? null);
+
+    if (error) {
+      console.warn('get_my_reservations_for_business_json_v1', error.message);
+      setMyReservations([]);
+      return;
+    }
+
+    const rows = Array.isArray(data) ? data as any[] : [];
+    const mapped: MyReservation[] = rows.map(r => ({
+      id: r.id,
+      start_at: r.start_at,
+      end_at: r.end_at,
+      status: (r.status as 'pending' | 'accepted') ?? 'pending',
+      customer_name: r.customer_name ?? null,
+      customer_phone: r.customer_phone ?? null,
+    }));
+
+    // console.log('myReservations length', data?.length, data);
+
+    // Oculta las que ya terminaron por si el backend devolviera alguna al límite
+    setMyReservations(mapped);
   }, [businessId]);
+
+
 
   useEffect(() => { reloadMyReservation(); }, [businessId]);
   useEffect(() => {
@@ -212,9 +258,14 @@ export default function BusinessDetail({ route, navigation }: Props) {
   };
 
   // cliente: abrir modal sobre slot libre
+  function isPastSlot(startIso: string) {
+    // si la cita ya empezó, no permitimos reservar
+    return new Date(startIso).getTime() <= Date.now();
+  }
   const onPressFree = (slot: SlotRow) => {
-    setReserveSlot({ start_at: slot.start_at, end_at: slot.end_at });
-    setReserveOpen(true);
+    if (isPastSlot(slot.start_at)) return; // bloquea slots pasados
+      setReserveSlot({ start_at: slot.start_at, end_at: slot.end_at });
+      setReserveOpen(true);
   };
 
   // cliente: confirmar reserva desde la modal (DINÁMICO)
@@ -232,10 +283,20 @@ export default function BusinessDetail({ route, navigation }: Props) {
         p_phone: (form?.phone ?? '').trim(),
       };
 
-      const { data, error } = await supabase.rpc('create_reservation_rpc_json', { payload });
+      const { data, error } = await supabase.rpc('create_reservation_rpc_json_v1', { payload });
 
       if (error) {
-        console.warn('[create_reservation_rpc_json] code:', (error as any).code, 'message:', error.message, 'details:', (error as any).details);
+        const msg = (error.message || '').toLowerCase();
+
+        if (msg.includes('límite de reservas') || msg.includes('limite de reservas')) {
+          Alert.alert('No se pudo reservar', 'Has alcanzado el límite de reservas de este establecimiento.');
+          return;
+        }
+        if (msg.includes('solapa') || error.message === 'El horario seleccionado se solapa con otra reserva') {
+          Alert.alert('No se pudo reservar', 'Ese tramo ya no está disponible.');
+          return;
+        }
+        
         Alert.alert('No se pudo reservar', error.message || 'Inténtalo de nuevo.');
         return;
       }
@@ -273,9 +334,16 @@ export default function BusinessDetail({ route, navigation }: Props) {
     const t = new Date(s.start_at);
     const hh = `${t.getHours()}`.padStart(2, '0');
     const mm = `${t.getMinutes()}`.padStart(2, '0');
+    const past = isPastSlot(s.start_at);
 
     let bg = '#e8f5e9', fg = '#1b5e20', label = 'Libre';
     let right: React.ReactNode = <Feather name="chevron-right" size={16} color={fg} />;
+
+    if (s.is_free && past) {
+      // libre pero ya pasado → deshabilitado
+      bg = '#f5f5f5'; fg = '#9e9e9e'; label = 'Pasada';
+      right = null;
+    }
 
     if (!s.is_free) {
       if (s.occupant_status === 'pending') { bg = '#f0f0f0'; fg = '#555'; label = 'Pendiente'; }
@@ -294,9 +362,9 @@ export default function BusinessDetail({ route, navigation }: Props) {
               </TouchableOpacity>
             </View>
           );
-        } else {
+        } else if(s.is_mine){
           right = (
-            <TouchableOpacity onPress={() => ownerCancel(s)} style={[styles.iconBtn, { backgroundColor: '#c62828' }]}>
+            <TouchableOpacity onPress={() => cancelMineFromSlot(s)} style={[styles.iconBtn, { backgroundColor: '#c62828' }]}>
               <Feather name="x" size={16} color="#fff" />
             </TouchableOpacity>
           );
@@ -355,22 +423,58 @@ export default function BusinessDetail({ route, navigation }: Props) {
       />
 
       <ScrollView contentContainerStyle={{ padding: 16 }}>
-        {/* Banner "Tu cita" (solo futura) */}
-        {myReservation && new Date(myReservation.start_at).getTime() > Date.now() && (
+        {/* Banner "Tus citas" (hasta 2 futuras) */}
+        {myReservations.length > 0 && (
           <View style={styles.myBanner}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.myBannerTitle}>Tu cita</Text>
-              <Text style={styles.myBannerLine}>{myDateText}</Text>
-              <Text style={[styles.myBannerLine, { opacity: 0.8 }]}>
-                Estado: {myReservation.status === 'pending' ? 'Pendiente' : 'Aceptada'}
+              <Text style={styles.myBannerTitle}>
+                {myReservations.length === 1 ? 'Tu cita' : 'Tus próximas citas'}
               </Text>
+
+              {myReservations.map((res, i) => {
+                const d = new Date(res.start_at);
+                const datePart = d.toLocaleDateString('es-ES', { weekday: 'short', day: '2-digit', month: 'short' });
+                const timePart = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+
+                return (
+                  <View key={res.id} style={{ marginTop: i === 0 ? 2 : 8, flexDirection: 'row', alignItems: 'center' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.myBannerLine}>{`${datePart} · ${timePart}`}</Text>
+                      <Text style={[
+                        styles.myBannerLine,
+                        res.status === 'accepted' ? { color: '#1b5e20', fontWeight: '800' } : { color: '#b26a00', fontWeight: '800' }
+                      ]}>
+                        {res.status === 'accepted' ? 'Aceptada' : 'Pendiente'}
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity
+                      onPress={async () => {
+                        const token = await getClientTokenOrNull();
+                        if (!token) return;
+                        const { error } = await supabase.rpc('cancel_reservation_by_token_json', {
+                          payload: { p_reservation: res.id, p_client_token: token }
+                        });
+                        if (error) {
+                          Alert.alert('Error', error.message);
+                          return;
+                        }
+                        // Quita solo esa
+                        setMyReservations(prev => prev.filter(x => x.id !== res.id));
+                        reloadDay();
+                      }}
+                      style={styles.myBannerBtn}
+                    >
+                      <Feather name="x" size={16} color="#fff" />
+                      <Text style={styles.myBannerBtnText}>Cancelar</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
             </View>
-            <TouchableOpacity onPress={cancelMyReservation} style={styles.myBannerBtn}>
-              <Feather name="x" size={16} color="#fff" />
-              <Text style={styles.myBannerBtnText}>Cancelar</Text>
-            </TouchableOpacity>
           </View>
         )}
+
 
         {/* Selector card + flechas + fecha + chips semana */}
         <View style={styles.selectorCard}>

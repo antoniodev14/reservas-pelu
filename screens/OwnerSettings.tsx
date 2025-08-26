@@ -22,6 +22,15 @@ type WeekMap = Record<number, DaySlot[]>; // 0..6
 
 type Closure = { id: number; starts_on: string; ends_on: string; message: string | null };
 
+// Resultado del reflow
+type ReflowRow = {
+  reservation_id: string;
+  old_end_at: string | null;
+  new_end_at: string | null;
+  updated: boolean;
+  reason: string | null; // 'overlap' | null
+};
+
 // ------------ Constantes ------------
 const DURATIONS = [20, 30, 40] as const;
 type DurationOpt = typeof DURATIONS[number];
@@ -73,6 +82,10 @@ export default function OwnerSettings() {
   const [biz, setBiz] = useState<MyBusiness | null>(null);
   const [selectedDur, setSelectedDur] = useState<DurationOpt | null>(null);
   const [savingDur, setSavingDur] = useState(false);
+
+  // Aplicar ahora + resultado del reflow
+  const [applyingNow, setApplyingNow] = useState(false);
+  const [reflowResult, setReflowResult] = useState<ReflowRow[] | null>(null);
 
   // --- Plantilla semanal ---
   const [weekLoading, setWeekLoading] = useState(true);
@@ -126,7 +139,7 @@ export default function OwnerSettings() {
     return `Programada desde ${dateFmt}: ${biz.pending_duration_minutes} min`;
   }, [biz?.pending_duration_minutes, biz?.pending_applies_from]);
 
-  // Guardar duración (aplica desde mañana según tu RPC owner_set_duration)
+  // Guardar duración (aplica desde mañana)
   const saveDuration = async () => {
     if (!biz?.id || !selectedDur) return;
     setSavingDur(true);
@@ -147,7 +160,55 @@ export default function OwnerSettings() {
       pending_duration_minutes: row.pending_duration ?? selectedDur,
       pending_applies_from: row.applies_from ?? prev.pending_applies_from,
     }) : prev);
+    setReflowResult(null);
     Alert.alert('Guardado', 'La nueva duración aplicará desde mañana.');
+  };
+
+  // Aplicar AHORA + reflow
+  const applyNowAndReflow = async () => {
+    if (!biz?.id || !selectedDur) return;
+    try {
+      setApplyingNow(true);
+      // 1) Actualiza inmediatamente la duración activa
+      const { error: upErr } = await supabase
+        .from('businesses')
+        .update({
+          default_duration_minutes: selectedDur,
+          pending_duration_minutes: null,
+          pending_applies_from: null
+        })
+        .eq('id', biz.id);
+      if (upErr) throw upErr;
+
+      // 2) Recalcula end_at de reservas FUTURAS
+      const { data: reflow, error: rfErr } = await supabase.rpc('reflow_future_reservations_json', {
+        payload: { p_business: biz.id }
+      });
+      if (rfErr) throw rfErr;
+
+      const rows = (reflow as ReflowRow[]) ?? [];
+      setReflowResult(rows);
+
+      // 3) Refresca estado local
+      setBiz(prev => prev ? ({
+        ...prev,
+        default_duration_minutes: selectedDur,
+        pending_duration_minutes: null,
+        pending_applies_from: null
+      }) : prev);
+
+      const updated = rows.filter(r => r.updated).length;
+      const overlaps = rows.filter(r => !r.updated && r.reason === 'overlap').length;
+      const msg =
+        overlaps > 0
+          ? `Duración aplicada ahora. Reservas ajustadas: ${updated}. No ajustadas por solape: ${overlaps}.`
+          : `Duración aplicada ahora. Reservas ajustadas: ${updated}.`;
+      Alert.alert('Listo', msg);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'No se pudo aplicar ahora.');
+    } finally {
+      setApplyingNow(false);
+    }
   };
 
   // --- Plantilla: cargar, añadir, borrar, guardar ---
@@ -280,7 +341,7 @@ export default function OwnerSettings() {
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Duración de la cita</Text>
               <Text style={styles.cardDesc}>
-                Cambia a 20/30/40 min. El cambio aplicará <Text style={{fontWeight:'800'}}>desde mañana</Text>.
+                Cambia a 20/30/40 min.
               </Text>
 
               <View style={styles.infoBox}>
@@ -304,9 +365,49 @@ export default function OwnerSettings() {
                 })}
               </View>
 
+              {/* Botón clásico: programa desde mañana */}
               <TouchableOpacity disabled={savingDur || !selectedDur} onPress={saveDuration} style={[styles.primaryBtn, savingDur && { opacity: 0.6 }]}>
-                <Text style={styles.primaryBtnText}>{savingDur ? 'Guardando…' : 'Guardar'}</Text>
+                <Text style={styles.primaryBtnText}>{savingDur ? 'Guardando…' : 'Guardar (aplica desde mañana)'}</Text>
               </TouchableOpacity>
+
+              {/* Botón nuevo: aplicar ahora + reflow */}
+              <TouchableOpacity
+                disabled={applyingNow || !selectedDur}
+                onPress={applyNowAndReflow}
+                style={[styles.secondaryBtn, applyingNow && { opacity: 0.6 }]}
+              >
+                <Text style={styles.secondaryBtnText}>
+                  {applyingNow ? 'Aplicando…' : 'Aplicar ahora y ajustar reservas futuras'}
+                </Text>
+              </TouchableOpacity>
+
+              {/* Resultado del reflow (sin FlatList, para evitar el warning) */}
+              {reflowResult && reflowResult.length > 0 && (
+                <View style={{ marginTop: 14 }}>
+                  <Text style={styles.cardDesc}>Resultado del ajuste:</Text>
+                  <View>
+                    {reflowResult.map((item) => {
+                      const newEnd = item.new_end_at ? new Date(item.new_end_at) : null;
+                      return (
+                        <View key={item.reservation_id} style={styles.resultRow}>
+                          <Text style={styles.resultId} numberOfLines={1}>{item.reservation_id}</Text>
+                          <Text style={[styles.resultPill, item.updated ? styles.ok : styles.warn]}>
+                            {item.updated ? 'ACTUALIZADA' : 'NO CAMBIADA'}
+                          </Text>
+                          {!item.updated && item.reason === 'overlap' && (
+                            <Text style={styles.reason}>Solape</Text>
+                          )}
+                          {!!newEnd && (
+                            <Text style={styles.small}>
+                              Nuevo fin: {newEnd.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
             </View>
 
             {/* Plantilla semanal */}
@@ -420,8 +521,11 @@ const styles = StyleSheet.create({
   radioDot:{width:10,height:10,borderRadius:6,backgroundColor:'#111'},
   radioLabel:{fontSize:14,fontWeight:'700'},
 
-  primaryBtn:{paddingVertical:12,borderRadius:10,backgroundColor:'#111',alignItems:'center'},
+  primaryBtn:{paddingVertical:12,borderRadius:10,backgroundColor:'#111',alignItems:'center', marginBottom:8},
   primaryBtnText:{color:'#fff',fontWeight:'700'},
+
+  secondaryBtn:{paddingVertical:12,borderRadius:10,backgroundColor:'#e9edf7',alignItems:'center', borderWidth:1, borderColor:'#cfd7ea'},
+  secondaryBtnText:{color:'#111',fontWeight:'800'},
 
   // Semana
   dayRow:{flexDirection:'row',justifyContent:'space-between',marginBottom:10},
@@ -449,7 +553,12 @@ const styles = StyleSheet.create({
   closureMsg:{color:'#555',marginTop:2},
   cvForm:{flexDirection:'row',alignItems:'center',marginTop:6},
 
-  // Placeholders
-  placeholderBox:{borderWidth:1,borderColor:'#ddd',borderStyle:'dashed',borderRadius:12,padding:16,alignItems:'center',justifyContent:'center'},
-  placeholderText:{color:'#888'},
+  // Resultados reflow
+  resultRow:{borderWidth:1,borderColor:'#eee',backgroundColor:'#fff',padding:10,borderRadius:10,marginBottom:8},
+  resultId:{fontSize:12,color:'#333',marginBottom:4},
+  resultPill:{alignSelf:'flex-start',paddingHorizontal:8,paddingVertical:4,borderRadius:8,marginBottom:4,fontSize:12,fontWeight:'800',color:'#fff',overflow:'hidden'},
+  ok:{backgroundColor:'#1b5e20'},
+  warn:{backgroundColor:'#b26a00'},
+  reason:{fontSize:12,color:'#b26a00',marginBottom:2},
+  small:{fontSize:12,color:'#555'},
 });
