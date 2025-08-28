@@ -12,11 +12,11 @@ import BusinessDetail from './screens/BusinessDetail';
 import OwnerSettings from './screens/OwnerSettings';
 import OwnerRequests from './screens/OwnerRequests';
 import OwnerClientList from './screens/OwnerClientList';
+import OwnerServices from './screens/OwnerServices';
 import { supabase } from './lib/supabase';
 
 export type RootStackParamList = {
-  Tabs: undefined;
-  Home: undefined;
+  Inicio: undefined;
   BusinessDetail: { businessId: string; name: string };
 };
 
@@ -25,6 +25,7 @@ export type OwnerTabParamList = {
   OwnerManage: undefined;
   OwnerRequests: undefined;
   OwnerClientList: undefined;
+  OwnerServices: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -71,6 +72,14 @@ function OwnerTabs() {
         options={{
           tabBarLabel: 'Gestion',
           tabBarIcon: ({ color, size }) => <Feather name="user" color={color} size={size} />,
+        }}
+      />
+      <Tab.Screen
+        name="OwnerServices"
+        component={OwnerServices}
+        options={{
+          title: 'Servicios',
+          tabBarIcon: ({ color, size }) => <Feather name="list" color={color} size={size} />,
         }}
       />
     </Tab.Navigator>
@@ -125,12 +134,12 @@ export default function App() {
         <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#fff' } }}>
           {isOwnerSession ? (
             <>
-              <Stack.Screen name="Tabs" component={OwnerTabs} />
+              <Stack.Screen name="Inicio" component={OwnerTabs} />
               <Stack.Screen name="BusinessDetail" component={BusinessDetail} />
             </>
           ) : (
             <>
-              <Stack.Screen name="Home" component={Home} />
+              <Stack.Screen name="Inicio" component={Home} />
               <Stack.Screen name="BusinessDetail" component={BusinessDetail} />
             </>
           )}

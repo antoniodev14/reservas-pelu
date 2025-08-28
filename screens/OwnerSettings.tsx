@@ -12,9 +12,8 @@ import { Feather } from '@expo/vector-icons';
 type MyBusiness = {
   id: string;
   name: string;
-  default_duration_minutes: number | null;
-  pending_duration_minutes: number | null;
-  pending_applies_from: string | null; // ISO date (YYYY-MM-DD)
+  // OJO: ahora usamos slot_granularity_minutes en lugar de la “duración de cita”
+  slot_granularity_minutes: number | null;
 };
 
 type DaySlot = { slot_id?: number; opens: string; closes: string }; // HH:MM
@@ -22,18 +21,9 @@ type WeekMap = Record<number, DaySlot[]>; // 0..6
 
 type Closure = { id: number; starts_on: string; ends_on: string; message: string | null };
 
-// Resultado del reflow
-type ReflowRow = {
-  reservation_id: string;
-  old_end_at: string | null;
-  new_end_at: string | null;
-  updated: boolean;
-  reason: string | null; // 'overlap' | null
-};
-
 // ------------ Constantes ------------
-const DURATIONS = [20, 30, 40] as const;
-type DurationOpt = typeof DURATIONS[number];
+const GRANULARITIES = [10, 20, 30] as const;
+type GranularityOpt = typeof GRANULARITIES[number];
 
 const WEEK_LABELS = ['Do', 'Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa'];
 const WEEK_FULL = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
@@ -77,15 +67,11 @@ export default function OwnerSettings() {
     return () => { s.remove(); h.remove(); };
   }, []);
 
-  // --- Estado negocio / duración ---
+  // --- Estado negocio / granuralidad ---
   const [loading, setLoading] = useState(true);
   const [biz, setBiz] = useState<MyBusiness | null>(null);
-  const [selectedDur, setSelectedDur] = useState<DurationOpt | null>(null);
-  const [savingDur, setSavingDur] = useState(false);
-
-  // Aplicar ahora + resultado del reflow
-  const [applyingNow, setApplyingNow] = useState(false);
-  const [reflowResult, setReflowResult] = useState<ReflowRow[] | null>(null);
+  const [selectedGran, setSelectedGran] = useState<GranularityOpt | null>(null);
+  const [savingGran, setSavingGran] = useState(false);
 
   // --- Plantilla semanal ---
   const [weekLoading, setWeekLoading] = useState(true);
@@ -102,7 +88,7 @@ export default function OwnerSettings() {
   const [cvMsg, setCvMsg] = useState('');
   const [cvLoading, setCvLoading] = useState(false);
 
-  // Cargar negocio del dueño + duración
+  // Cargar negocio del dueño (incluye slot_granularity_minutes)
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -112,7 +98,7 @@ export default function OwnerSettings() {
 
       const { data, error } = await supabase
         .from('businesses')
-        .select('id, name, default_duration_minutes, pending_duration_minutes, pending_applies_from')
+        .select('id, name, slot_granularity_minutes')
         .eq('owner_user_id', uid)
         .maybeSingle();
 
@@ -125,89 +111,32 @@ export default function OwnerSettings() {
 
       const b = data as MyBusiness;
       setBiz(b);
-      const pre = (b.pending_duration_minutes ?? b.default_duration_minutes ?? 30) as DurationOpt;
-      setSelectedDur(pre);
+      const pre = (b.slot_granularity_minutes ?? 10) as GranularityOpt;
+      setSelectedGran(pre);
       setLoading(false);
     })();
   }, []);
 
-  // Texto informativo de pendiente
-  const pendingText = useMemo(() => {
-    if (!biz?.pending_duration_minutes || !biz?.pending_applies_from) return null;
-    const d = new Date(biz.pending_applies_from + 'T00:00:00');
-    const dateFmt = d.toLocaleDateString('es-ES', { year: 'numeric', month: 'short', day: 'numeric' });
-    return `Programada desde ${dateFmt}: ${biz.pending_duration_minutes} min`;
-  }, [biz?.pending_duration_minutes, biz?.pending_applies_from]);
-
-  // Guardar duración (aplica desde mañana)
-  const saveDuration = async () => {
-    if (!biz?.id || !selectedDur) return;
-    setSavingDur(true);
-    const { data, error } = await supabase.rpc('owner_set_duration', {
-      p_business: biz.id,
-      p_minutes: selectedDur,
-    });
-    setSavingDur(false);
-    if (error) {
-      console.warn('owner_set_duration', error.message);
-      Alert.alert('Error', 'No se pudo guardar la duración.');
-      return;
-    }
-    const row = (Array.isArray(data) ? data[0] : data) as any;
-    setBiz(prev => prev ? ({
-      ...prev,
-      default_duration_minutes: row.current_duration ?? prev.default_duration_minutes,
-      pending_duration_minutes: row.pending_duration ?? selectedDur,
-      pending_applies_from: row.applies_from ?? prev.pending_applies_from,
-    }) : prev);
-    setReflowResult(null);
-    Alert.alert('Guardado', 'La nueva duración aplicará desde mañana.');
-  };
-
-  // Aplicar AHORA + reflow
-  const applyNowAndReflow = async () => {
-    if (!biz?.id || !selectedDur) return;
+  // Guardar tramos horario (10/20/30) y aplicar (afecta a los slots que verá BusinessDetail)
+  const saveGranularity = async () => {
+    if (!biz?.id || !selectedGran) return;
     try {
-      setApplyingNow(true);
-      // 1) Actualiza inmediatamente la duración activa
-      const { error: upErr } = await supabase
-        .from('businesses')
-        .update({
-          default_duration_minutes: selectedDur,
-          pending_duration_minutes: null,
-          pending_applies_from: null
-        })
-        .eq('id', biz.id);
-      if (upErr) throw upErr;
-
-      // 2) Recalcula end_at de reservas FUTURAS
-      const { data: reflow, error: rfErr } = await supabase.rpc('reflow_future_reservations_json', {
-        payload: { p_business: biz.id }
+      setSavingGran(true);
+      const { error } = await supabase.rpc('owner_set_slot_granularity', {
+        p_business: biz.id,
+        p_minutes: selectedGran,
       });
-      if (rfErr) throw rfErr;
-
-      const rows = (reflow as ReflowRow[]) ?? [];
-      setReflowResult(rows);
-
-      // 3) Refresca estado local
-      setBiz(prev => prev ? ({
-        ...prev,
-        default_duration_minutes: selectedDur,
-        pending_duration_minutes: null,
-        pending_applies_from: null
-      }) : prev);
-
-      const updated = rows.filter(r => r.updated).length;
-      const overlaps = rows.filter(r => !r.updated && r.reason === 'overlap').length;
-      const msg =
-        overlaps > 0
-          ? `Duración aplicada ahora. Reservas ajustadas: ${updated}. No ajustadas por solape: ${overlaps}.`
-          : `Duración aplicada ahora. Reservas ajustadas: ${updated}.`;
-      Alert.alert('Listo', msg);
+      setSavingGran(false);
+      if (error) {
+        console.warn('owner_set_slot_granularity', error.message);
+        Alert.alert('Error', 'No se pudo guardar los tramos.');
+        return;
+      }
+      setBiz(prev => prev ? ({ ...prev, slot_granularity_minutes: selectedGran }) : prev);
+      Alert.alert('Guardado', 'Tramos aplicados. El listado de horarios usará esta granularidad.');
     } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'No se pudo aplicar ahora.');
-    } finally {
-      setApplyingNow(false);
+      setSavingGran(false);
+      Alert.alert('Error', e?.message ?? 'No se pudo guardar.');
     }
   };
 
@@ -337,25 +266,22 @@ export default function OwnerSettings() {
         <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':'height'} keyboardVerticalOffset={Platform.OS==='ios'?insets.top:0} style={{flex:1}}>
           <ScrollView contentContainerStyle={{ padding:16, paddingBottom: kbVisible ? 8 : 16 }} keyboardShouldPersistTaps="handled">
 
-            {/* Duración de la cita */}
+            {/* Tramos de horario (granularidad) */}
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Duración de la cita</Text>
-              <Text style={styles.cardDesc}>
-                Cambia a 20/30/40 min.
-              </Text>
+              <Text style={styles.cardTitle}>Tramos de horario</Text>
+              <Text style={styles.cardDesc}>Elige cada cuánto aparecen los horarios (10/20/30 minutos).</Text>
 
               <View style={styles.infoBox}>
                 <Text style={styles.infoLine}>
-                  Activa hoy: <Text style={styles.bold}>{biz.default_duration_minutes ?? '—'} min</Text>
+                  Actual: <Text style={styles.bold}>{biz.slot_granularity_minutes ?? '—'} min</Text>
                 </Text>
-                {pendingText && <Text style={[styles.infoLine, { color: '#555' }]}>{pendingText}</Text>}
               </View>
 
               <View style={styles.radioRow}>
-                {DURATIONS.map((m) => {
-                  const checked = selectedDur === m;
+                {GRANULARITIES.map((m) => {
+                  const checked = selectedGran === m;
                   return (
-                    <TouchableOpacity key={m} style={styles.radioItem} onPress={() => setSelectedDur(m)}>
+                    <TouchableOpacity key={m} style={styles.radioItem} onPress={() => setSelectedGran(m)}>
                       <View style={[styles.radioCircle, checked && styles.radioCircleChecked]}>
                         {checked && <View style={styles.radioDot} />}
                       </View>
@@ -365,49 +291,15 @@ export default function OwnerSettings() {
                 })}
               </View>
 
-              {/* Botón clásico: programa desde mañana */}
-              <TouchableOpacity disabled={savingDur || !selectedDur} onPress={saveDuration} style={[styles.primaryBtn, savingDur && { opacity: 0.6 }]}>
-                <Text style={styles.primaryBtnText}>{savingDur ? 'Guardando…' : 'Guardar (aplica desde mañana)'}</Text>
-              </TouchableOpacity>
-
-              {/* Botón nuevo: aplicar ahora + reflow */}
               <TouchableOpacity
-                disabled={applyingNow || !selectedDur}
-                onPress={applyNowAndReflow}
-                style={[styles.secondaryBtn, applyingNow && { opacity: 0.6 }]}
+                disabled={savingGran || !selectedGran}
+                onPress={saveGranularity}
+                style={[styles.primaryBtn, savingGran && { opacity: 0.6 }]}
               >
-                <Text style={styles.secondaryBtnText}>
-                  {applyingNow ? 'Aplicando…' : 'Aplicar ahora y ajustar reservas futuras'}
+                <Text style={styles.primaryBtnText}>
+                  {savingGran ? 'Guardando…' : 'Guardar tramos y aplicar'}
                 </Text>
               </TouchableOpacity>
-
-              {/* Resultado del reflow (sin FlatList, para evitar el warning) */}
-              {reflowResult && reflowResult.length > 0 && (
-                <View style={{ marginTop: 14 }}>
-                  <Text style={styles.cardDesc}>Resultado del ajuste:</Text>
-                  <View>
-                    {reflowResult.map((item) => {
-                      const newEnd = item.new_end_at ? new Date(item.new_end_at) : null;
-                      return (
-                        <View key={item.reservation_id} style={styles.resultRow}>
-                          <Text style={styles.resultId} numberOfLines={1}>{item.reservation_id}</Text>
-                          <Text style={[styles.resultPill, item.updated ? styles.ok : styles.warn]}>
-                            {item.updated ? 'ACTUALIZADA' : 'NO CAMBIADA'}
-                          </Text>
-                          {!item.updated && item.reason === 'overlap' && (
-                            <Text style={styles.reason}>Solape</Text>
-                          )}
-                          {!!newEnd && (
-                            <Text style={styles.small}>
-                              Nuevo fin: {newEnd.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
-                            </Text>
-                          )}
-                        </View>
-                      );
-                    })}
-                  </View>
-                </View>
-              )}
             </View>
 
             {/* Plantilla semanal */}
@@ -510,10 +402,12 @@ const styles = StyleSheet.create({
   cardTitle:{fontSize:16,fontWeight:'800',marginBottom:6},
   cardDesc:{color:'#555',marginBottom:12},
 
-  // Duración
+  // Info
   infoBox:{backgroundColor:'#fff',borderRadius:10,padding:10,borderWidth:1,borderColor:'#eee',marginBottom:12},
   infoLine:{fontSize:14,marginBottom:2},
   bold:{fontWeight:'800'},
+
+  // Radios
   radioRow:{flexDirection:'row',gap:12,marginBottom:12},
   radioItem:{flexDirection:'row',alignItems:'center'},
   radioCircle:{width:20,height:20,borderRadius:12,borderWidth:2,borderColor:'#999',alignItems:'center',justifyContent:'center',marginRight:8},
@@ -523,9 +417,6 @@ const styles = StyleSheet.create({
 
   primaryBtn:{paddingVertical:12,borderRadius:10,backgroundColor:'#111',alignItems:'center', marginBottom:8},
   primaryBtnText:{color:'#fff',fontWeight:'700'},
-
-  secondaryBtn:{paddingVertical:12,borderRadius:10,backgroundColor:'#e9edf7',alignItems:'center', borderWidth:1, borderColor:'#cfd7ea'},
-  secondaryBtnText:{color:'#111',fontWeight:'800'},
 
   // Semana
   dayRow:{flexDirection:'row',justifyContent:'space-between',marginBottom:10},
@@ -552,13 +443,4 @@ const styles = StyleSheet.create({
   closureDates:{fontWeight:'800'},
   closureMsg:{color:'#555',marginTop:2},
   cvForm:{flexDirection:'row',alignItems:'center',marginTop:6},
-
-  // Resultados reflow
-  resultRow:{borderWidth:1,borderColor:'#eee',backgroundColor:'#fff',padding:10,borderRadius:10,marginBottom:8},
-  resultId:{fontSize:12,color:'#333',marginBottom:4},
-  resultPill:{alignSelf:'flex-start',paddingHorizontal:8,paddingVertical:4,borderRadius:8,marginBottom:4,fontSize:12,fontWeight:'800',color:'#fff',overflow:'hidden'},
-  ok:{backgroundColor:'#1b5e20'},
-  warn:{backgroundColor:'#b26a00'},
-  reason:{fontSize:12,color:'#b26a00',marginBottom:2},
-  small:{fontSize:12,color:'#555'},
 });
