@@ -1,3 +1,4 @@
+// screens/BusinessDetail.tsx
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
@@ -107,7 +108,7 @@ export default function BusinessDetail({ route, navigation }: Props) {
   // “mis citas”
   const [myReservations, setMyReservations] = useState<MyReservation[]>([]);
 
-  // reserva (modal cliente)
+  // reserva (modal tanto cliente como dueño)
   const [reserveOpen, setReserveOpen] = useState(false);
   const [reserveSlot, setReserveSlot] = useState<{ start_at: string; end_at: string } | null>(null);
 
@@ -272,11 +273,82 @@ export default function BusinessDetail({ route, navigation }: Props) {
   // Acciones
   function isPastSlot(startIso: string) { return new Date(startIso).getTime() <= Date.now(); }
 
+  // 👉 collapseSlots: une seguidos ocupados/pedientes en un solo bloque
+  const collapseSlots = useCallback((raw: SlotRow[], owner: boolean): SlotRow[] => {
+    if (!raw.length) return [];
+    const out: SlotRow[] = [];
+    let i = 0;
+    while (i < raw.length) {
+      const cur = raw[i];
+      // Agrupar solo NO libres
+      if (!cur.is_free) {
+        let j = i + 1;
+        // Criterio de unión:
+        // - Dueño: mismo reservation_id (si lo hay). Si no hay id, une mientras sigan NO libres.
+        // - Cliente: une sólo si es_mine.
+        while (j < raw.length) {
+          const next = raw[j];
+          const canMergeOwner = owner && !next.is_free &&
+            ((cur.reservation_id && next.reservation_id && next.reservation_id === cur.reservation_id) ||
+             (!cur.reservation_id && !next.is_free));
+          const canMergeClient = !owner && !next.is_free && cur.is_mine && next.is_mine;
+          if (canMergeOwner || canMergeClient) {
+            // continúa agrupando
+            j++;
+          } else break;
+        }
+        // Crear bloque colapsado [i..j-1]
+        const first = raw[i];
+        const last = raw[j - 1];
+        out.push({
+          ...first,
+          start_at: first.start_at,
+          end_at: last.end_at,
+          is_free: false,
+        });
+        i = j;
+      } else {
+        // Libres: se dejan tal cual (no se colapsan)
+        out.push(cur);
+        i += 1;
+      }
+    }
+    return out;
+  }, []);
+
+  // Slots visibles por rol (cliente no ve ocupadas ajenas)
+  const visibleSlots = useMemo(() => (isOwner ? slots : slots.filter(s => s.is_free || s.is_mine)), [isOwner, slots]);
+
+  // Aplicar colapso
+  const displaySlots = useMemo(() => collapseSlots(visibleSlots, isOwner), [visibleSlots, isOwner, collapseSlots]);
+
+  // Top 2 citas en banner y altura dinámica
+  const topReservations = useMemo(() => myReservations.slice(0, MAX_ACTIVE_RESERVATIONS), [myReservations]);
+  const bannerHeight = useMemo(() => (topReservations.length > 1 ? 300 : 240), [topReservations.length]);
+
+  // Helpers abrir enlaces
+  async function safeOpenURL(url: string) {
+    try {
+      const can = await Linking.canOpenURL(url);
+      if (can) await Linking.openURL(url);
+    } catch {}
+  }
+  function openPhone(phone?: string | null) { if (!phone) return; safeOpenURL(`tel:${phone}`); }
+  function openMaps(lat?: number | null, lon?: number | null, address?: string | null) {
+    if (lat != null && lon != null) { safeOpenURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lon}`); return; }
+    if (address && address.trim()) { safeOpenURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address.trim())}`); }
+  }
+
+  // Clicks en celdas
   const onPressFree = (slot: SlotRow) => {
-    if (isOwner) return;
     if (isPastSlot(slot.start_at)) return;
     if (dayClosed.closed) return; // por si acaso
-    if (myReservations.length >= MAX_ACTIVE_RESERVATIONS) { Alert.alert('Límite de reservas', 'Ya tienes 2 citas activas.'); return; }
+    // Cliente: límite 2
+    if (!isOwner && myReservations.length >= MAX_ACTIVE_RESERVATIONS) {
+      Alert.alert('Límite de reservas', 'Ya tienes 2 citas activas.');
+      return;
+    }
+    // Tanto dueño como cliente abren la MISMA modal de reserva
     setReserveSlot({ start_at: slot.start_at, end_at: slot.end_at });
     setReserveOpen(true);
   };
@@ -284,13 +356,13 @@ export default function BusinessDetail({ route, navigation }: Props) {
   const onPressOccupiedOwner = (slot: SlotRow) => { if (!isOwner) return; setOwnerSlot(slot); setOwnerInfoOpen(true); };
   const onPressMineInfo = (slot: SlotRow) => { if (isOwner) return; if (!slot.is_free && slot.is_mine) { setClientSlot(slot); setClientInfoOpen(true); } };
 
+  // Acciones dueño sobre ocupadas
   const ownerAccept = async (slot: SlotRow) => {
     if (!slot.reservation_id) return;
     await supabase.rpc('owner_accept_reservation', { p_business: businessId, p_reservation: slot.reservation_id });
     reloadDay();
     if (ownerInfoOpen) setOwnerSlot((s) => (s ? { ...s, occupant_status: 'accepted' } : s));
   };
-
   const ownerCancel = async (slot: SlotRow) => {
     if (!slot.reservation_id) return;
     Alert.alert(
@@ -319,34 +391,71 @@ export default function BusinessDetail({ route, navigation }: Props) {
     );
   };
 
+  // Confirmar reserva desde modal (cliente y dueño comparten modal)
   const confirmReservation = async (form: { name: string; phone: string }, serviceId: string) => {
     if (!reserveSlot) { Alert.alert('Error', 'No hay tramo seleccionado.'); return; }
     try {
-      const token = await getOrCreateClientToken();
-      const payload = {
-        p_business: uuidOrThrow(businessId, 'p_business'),
-        p_client_token: (token ?? '').trim(),
-        p_start_at: isoOrThrow(reserveSlot.start_at, 'p_start_at'),
-        p_end_at: isoOrThrow(reserveSlot.end_at, 'p_end_at'),
-        p_name: (form?.name ?? '').trim(),
-        p_phone: (form?.phone ?? '').trim(),
-        p_service_id: serviceId,
-      };
-      const { error } = await supabase.rpc('create_reservation_rpc_json_v2', { payload });
-      if (error) { Alert.alert('Error', error.message || 'Inténtalo de nuevo.'); return; }
-      setReserveOpen(false); setReserveSlot(null);
-      await Promise.all([reloadDay()]);
-      // refrescamos mis citas tras crear
-      const tk = await getClientTokenOrNull();
-      if (tk) {
-        const { data } = await supabase.rpc('get_my_reservations_for_business_json_v1', { payload: { p_business: businessId, p_client_token: tk } });
-        const rows = Array.isArray(data) ? (data as any[]) : [];
-        setMyReservations(rows.map(r => ({
-          id: r.id, start_at: r.start_at, end_at: r.end_at, status: (r.status as 'pending' | 'accepted') ?? 'pending',
-          customer_name: r.customer_name ?? null, customer_phone: r.customer_phone ?? null,
-        })));
+      // 1) Buscar la duración del servicio para calcular fin
+      const { data: svc, error: svcErr } = await supabase
+        .from('services')
+        .select('duration_minutes')
+        .eq('id', serviceId)
+        .maybeSingle();
+      if (svcErr || !svc) { Alert.alert('Error', 'No se pudo obtener el servicio.'); return; }
+      const dur = Number(svc.duration_minutes || 0);
+      if (!dur) { Alert.alert('Error', 'Duración del servicio inválida.'); return; }
+
+      const startISO = isoOrThrow(reserveSlot.start_at, 'p_start_at');
+      const startDate = new Date(startISO);
+      const endDate = new Date(startDate.getTime() + dur * 60 * 1000);
+      const endISO = endDate.toISOString();
+
+      if (isOwner) {
+        // 2A) DUEÑO: reserva sin límite usando tu RPC
+        const payload = {
+          p_business: uuidOrThrow(businessId, 'p_business'),
+          p_start_at: startISO,
+          p_end_at: endISO,
+          p_name: (form?.name ?? '').trim() || null,
+          p_phone: (form?.phone ?? '').trim() || null,
+          p_service_id: serviceId,
+        };
+        const { error } = await supabase.rpc('owner_create_reservations_json', { payload });
+        if (error) { Alert.alert('Error', error.message || 'No se pudo crear'); return; }
+      } else {
+        // 2B) CLIENTE: usa tu RPC v2 (con servicio)
+        const token = await getOrCreateClientToken();
+        const payload = {
+          p_business: uuidOrThrow(businessId, 'p_business'),
+          p_client_token: (token ?? '').trim(),
+          p_start_at: startISO,
+          p_end_at: endISO,
+          p_name: (form?.name ?? '').trim(),
+          p_phone: (form?.phone ?? '').trim(),
+          p_service_id: serviceId,
+        };
+        const { error } = await supabase.rpc('create_reservation_rpc_json_v2', { payload });
+        if (error) { Alert.alert('Error', error.message || 'Inténtalo de nuevo.'); return; }
       }
-    } catch (e: any) { Alert.alert('Error', e?.message ?? 'No se pudo completar la reserva.'); }
+
+      setReserveOpen(false); setReserveSlot(null);
+      await reloadDay();
+
+      // refrescamos mis citas tras crear (solo si cliente)
+      if (!isOwner) {
+        const tk = await getClientTokenOrNull();
+        if (tk) {
+          const { data } = await supabase.rpc('get_my_reservations_for_business_json_v1', { payload: { p_business: businessId, p_client_token: tk } });
+          const rows = Array.isArray(data) ? (data as any[]) : [];
+          setMyReservations(rows.map(r => ({
+            id: r.id, start_at: r.start_at, end_at: r.end_at, status: (r.status as 'pending' | 'accepted') ?? 'pending',
+            customer_name: r.customer_name ?? null, customer_phone: r.customer_phone ?? null,
+          })));
+        }
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'No se pudo completar la reserva.');
+    }
   };
 
   const cancelReservationById = useCallback(async (resId: string) => {
@@ -354,7 +463,7 @@ export default function BusinessDetail({ route, navigation }: Props) {
     if (!token) return;
     await supabase.rpc('cancel_reservation_by_token_json', { payload: { p_reservation: resId, p_client_token: token } });
     // refresh
-    await Promise.all([reloadDay()]);
+    await reloadDay();
     const { data } = await supabase.rpc('get_my_reservations_for_business_json_v1', { payload: { p_business: businessId, p_client_token: token } });
     const rows = Array.isArray(data) ? (data as any[]) : [];
     setMyReservations(rows.map(r => ({
@@ -376,38 +485,16 @@ export default function BusinessDetail({ route, navigation }: Props) {
     if (startOfMonth(next).getTime() > maxDate.getTime()) return;
     setCurrentDate(stripTime(next)); setReserveSlot(null);
   };
-  // inicio del mes actual
   const monthStart = useMemo(() => startOfMonth(currentDate), [currentDate]);
   const gridStart = useMemo(() => startOfWeekSunday(monthStart), [monthStart]);
   const gridDays = useMemo(() => {
     const daysInMonth = endOfMonth(currentDate).getDate();
-    const startWeekday = monthStart.getDay(); // 0..6 (Do..Sa), empezamos en domingo
-    const weeks = Math.ceil((startWeekday + daysInMonth) / 7); // 4, 5 o 6
+    const startWeekday = monthStart.getDay(); // 0..6
+    const weeks = Math.ceil((startWeekday + daysInMonth) / 7); // 4,5 o 6
     const totalCells = weeks * 7;
     return Array.from({ length: totalCells }, (_, i) => addDays(gridStart, i));
   }, [gridStart, currentDate]);
-
   const longMonth = useMemo(() => currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }), [currentDate]);
-
-  // Slots visibles por rol (cliente no ve ocupadas ajenas)
-  const visibleSlots = useMemo(() => (isOwner ? slots : slots.filter(s => s.is_free || s.is_mine)), [isOwner, slots]);
-
-  // Top 2 citas en banner y altura dinámica
-  const topReservations = useMemo(() => myReservations.slice(0, MAX_ACTIVE_RESERVATIONS), [myReservations]);
-  const bannerHeight = useMemo(() => (topReservations.length > 1 ? 300 : 240), [topReservations.length]);
-
-  // Helpers abrir enlaces
-  async function safeOpenURL(url: string) {
-    try {
-      const can = await Linking.canOpenURL(url);
-      if (can) await Linking.openURL(url);
-    } catch {}
-  }
-  function openPhone(phone?: string | null) { if (!phone) return; safeOpenURL(`tel:${phone}`); }
-  function openMaps(lat?: number | null, lon?: number | null, address?: string | null) {
-    if (lat != null && lon != null) { safeOpenURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lon}`); return; }
-    if (address && address.trim()) { safeOpenURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address.trim())}`); }
-  }
 
   return (
     <View style={styles.container}>
@@ -549,11 +636,11 @@ export default function BusinessDetail({ route, navigation }: Props) {
             </View>
           ) : loadingDay ? (
             <View style={{ paddingVertical: 10 }}><ActivityIndicator /></View>
-          ) : visibleSlots.length === 0 ? (
+          ) : displaySlots.length === 0 ? (
             <Text style={{ color: '#666' }}>No hay horarios para este día.</Text>
           ) : (
             <View style={{ gap: 10 }}>
-              {twoColumnChunks(visibleSlots).map((pair, rowIdx) => (
+              {twoColumnChunks(displaySlots).map((pair, rowIdx) => (
                 <View key={rowIdx} style={styles.slotRow2}>
                   {pair.map((s, colIdx) => {
                     const t = new Date(s.start_at);
@@ -561,36 +648,50 @@ export default function BusinessDetail({ route, navigation }: Props) {
                     const mm = pad2(t.getMinutes());
                     const past = isPastSlot(s.start_at);
 
-                    let bg = '#e8f5e9', fg = '#1b5e20', label = 'Libre';
-                    let right: React.ReactNode = <Feather name="chevron-right" size={16} color={fg} />;
+                    // Si el slot es colapsado ocupando varios, queremos mostrar el rango completo
+                    const isBusy = !s.is_free;
+                    const rightIcon = isBusy
+                      ? (isOwner || (!isOwner && s.is_mine) ? <Feather name="info" size={16} color="#b71c1c" /> : null)
+                      : <Feather name="chevron-right" size={16} color="#1b5e20" />;
 
-                    if (s.is_free && past) { bg = '#f5f5f5'; fg = '#9e9e9e'; label = 'Pasada'; right = null; }
-                    if (!s.is_free) {
-                      bg = '#ffebee'; fg = '#b71c1c'; label = 'Ocupada';
-                      if (isOwner || (!isOwner && s.is_mine)) right = <Feather name="info" size={16} color={fg} />; else right = null;
-                    }
+                    const mainText = isBusy
+                      ? `${new Date(s.start_at).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})} - ${new Date(s.end_at).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})}`
+                      : `${hh}:${mm}`;
+
+                    let bg = isBusy ? '#ffebee' : '#e8f5e9';
+                    let fg = isBusy ? '#b71c1c' : '#1b5e20';
+                    let label = isBusy ? 'Ocupada' : 'Libre';
+
+                    if (!isBusy && past) { bg = '#f5f5f5'; fg = '#9e9e9e'; label = 'Pasada'; }
 
                     const CellContent = (
                       <View style={[styles.slotCell, { backgroundColor: bg }]}>
                         <View style={{ flex: 1 }}>
-                          <Text style={[styles.slotHour, { color: fg }]}>{hh}:{mm}</Text>
+                          <Text style={[styles.slotHour, { color: fg }]}>{mainText}</Text>
                           <Text style={[styles.slotSub, { color: fg }]}>{label}</Text>
                         </View>
-                        {right}
+                        {rightIcon}
                       </View>
                     );
 
                     const key = `${rowIdx}-${colIdx}`;
 
                     if (isOwner) {
-                      return s.is_free ? (
-                        <View key={key} style={{ flex: 1, opacity: past ? 0.6 : 1 }}>{CellContent}</View>
-                      ) : (
+                      // Dueño: en libre -> abrir modal de reserva (sin límites). En ocupada -> info
+                      if (s.is_free) {
+                        return (
+                          <TouchableOpacity key={key} activeOpacity={0.9} onPress={() => onPressFree(s)} style={{ flex: 1, opacity: past ? 0.6 : 1 }}>
+                            {CellContent}
+                          </TouchableOpacity>
+                        );
+                      }
+                      return (
                         <TouchableOpacity key={key} activeOpacity={0.9} onPress={() => onPressOccupiedOwner(s)} style={{ flex: 1 }}>
                           {CellContent}
                         </TouchableOpacity>
                       );
                     } else {
+                      // Cliente: libre -> reservar; mía ocupada -> info; otras ocupadas no se muestran por filtro
                       if (s.is_free) {
                         return (
                           <TouchableOpacity key={key} activeOpacity={0.9} onPress={() => onPressFree(s)} style={{ flex: 1 }}>
@@ -616,15 +717,15 @@ export default function BusinessDetail({ route, navigation }: Props) {
         </View>
       </ScrollView>
 
-      {/* Modal reserva (cliente) */}
+      {/* Modal reserva (cliente y dueño comparten) */}
       <ReserveModal
         visible={reserveOpen}
-        businessId={businessId}                 // ← añade esto
+        businessId={businessId}
         onClose={() => setReserveOpen(false)}
-        onConfirm={(form, serviceId) => confirmReservation(form, serviceId)}  // ← ahora recibe serviceId
+        onConfirm={(form, serviceId) => confirmReservation(form, serviceId)}
       />
 
-      {/* Modal dueño */}
+      {/* Modal dueño: ver detalle/acciones de una cita ocupada */}
       <Modal visible={ownerInfoOpen} transparent animationType="fade" onRequestClose={() => setOwnerInfoOpen(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -639,7 +740,6 @@ export default function BusinessDetail({ route, navigation }: Props) {
                 <Text style={styles.modalLine}>Teléfono: {ownerSlot.occupant_phone ?? '—'}</Text>
 
                 <View style={{ flexDirection: 'row', marginTop: 12, flexWrap: 'wrap' }}>
-                  {/* Llamar si hay teléfono */}
                   {ownerSlot.occupant_phone ? (
                     <TouchableOpacity
                       onPress={() => openPhone(ownerSlot.occupant_phone!)}
@@ -650,7 +750,6 @@ export default function BusinessDetail({ route, navigation }: Props) {
                     </TouchableOpacity>
                   ) : null}
 
-                  {/* Aceptar si está pendiente */}
                   {ownerSlot.occupant_status === 'pending' ? (
                     <TouchableOpacity
                       onPress={() => ownerAccept(ownerSlot)}
@@ -661,7 +760,6 @@ export default function BusinessDetail({ route, navigation }: Props) {
                     </TouchableOpacity>
                   ) : null}
 
-                  {/* Eliminar siempre disponible */}
                   <TouchableOpacity
                     onPress={() => ownerCancel(ownerSlot)}
                     style={[styles.modalBtn, { backgroundColor: '#c62828', marginBottom: 8 }]}
@@ -679,7 +777,7 @@ export default function BusinessDetail({ route, navigation }: Props) {
         </View>
       </Modal>
 
-      {/* Modal cliente */}
+      {/* Modal cliente: ver detalle de su cita */}
       <Modal visible={clientInfoOpen} transparent animationType="fade" onRequestClose={() => setClientInfoOpen(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -730,7 +828,7 @@ const styles = StyleSheet.create({
   bannerSelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 6,          // separa header de la lista
+    marginBottom: 6,
   },
   selTitle: { color: '#fff', fontWeight: '900', marginLeft: 8 },
   bannerResRow: {
@@ -756,15 +854,15 @@ const styles = StyleSheet.create({
   calendarGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    alignContent: 'flex-start',   // importante para que no “estire”
+    alignContent: 'flex-start',
   },
   calendarCell: {
     width: `${100 / 7}%`,
-    aspectRatio: 1.0,             // compáctalo si quieres: 0.95
+    aspectRatio: 1.0,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 10,
-    marginVertical: 2,            // pon 0 si aún lo ves alto
+    marginVertical: 2,
   },
   calendarCellOutMonth:{ opacity:0.6 },
   calendarCellSelected:{ backgroundColor:'#111' },
