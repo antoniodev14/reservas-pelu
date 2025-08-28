@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, StyleSheet, Alert } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, StyleSheet, Alert, Linking } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import HeaderBar from '../components/HeaderBar';
@@ -14,6 +14,7 @@ type Row = {
   end_at: string;
   customer_name: string | null;
   customer_phone: string | null;
+  service_name: string | null;   // 🆕 añadido
 };
 
 export default function OwnerClientList() {
@@ -29,8 +30,6 @@ export default function OwnerClientList() {
 
       const { data, error } = await supabase.rpc('owner_list_upcoming_accepted_json', {
         payload: uid ? { p_owner_user_id: uid } : {}
-        // Si quieres filtrar por una pelu concreta:
-        // payload: { p_owner_user_id: uid, p_business_id: 'xxxxxxxx-xxxx-....' }
       });
 
       if (error) {
@@ -44,23 +43,14 @@ export default function OwnerClientList() {
     }
   }, []);
 
-  // refresca al enfocar
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // cada minuto limpia las que ya hayan terminado por si justo pasan
   useEffect(() => {
     const id = setInterval(() => {
       setItems(prev => prev.filter(x => new Date(x.end_at).getTime() > Date.now()));
     }, 60_000);
     return () => clearInterval(id);
   }, []);
-
-  const fmt = (iso: string) => {
-    const d = new Date(iso);
-    const date = d.toLocaleDateString('es-ES', { weekday: 'short', day: '2-digit', month: 'short' });
-    const time = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    return `${date} · ${time}`;
-  };
 
   const cancel = async (row: Row) => {
     Alert.alert('Anular cita', `¿Anular la cita de ${row.customer_name ?? 'cliente'}?`, [
@@ -78,41 +68,64 @@ export default function OwnerClientList() {
     ]);
   };
 
+  const callClient = (phone?: string | null) => {
+    if (!phone) return;
+    Linking.openURL(`tel:${phone}`).catch(()=>{});
+  };
+
   const renderItem = ({ item }: { item: Row }) => {
     const end = new Date(item.end_at);
     const start = new Date(item.start_at);
     const hour = start.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     const hourEnd = end.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     const fullDate = start.toLocaleDateString('es-ES', {
-        weekday: 'long', day: '2-digit', month: 'long', year: 'numeric'
+      weekday: 'long', day: '2-digit', month: 'long', year: 'numeric'
     });
+
+    const canCall = !!item.customer_phone;
 
     return (
       <View style={styles.card}>
         <View style={{ flex: 1 }}>
-            {/* Tramo horario grande */}
-            <Text style={styles.hourText}>{hour} – {hourEnd}</Text>
+          {/* Tramo horario grande */}
+          <Text style={styles.hourText}>{hour} – {hourEnd}</Text>
 
-            {/* Nombre + teléfono grandes */}
-            <Text style={styles.clientText}>
+          {/* Nombre + teléfono */}
+          <Text style={styles.clientText}>
             {item.customer_name ?? 'Cliente'}{item.customer_phone ? ` • ${item.customer_phone}` : ''}
-            </Text>
+          </Text>
 
-            {/* Fecha pequeña */}
-            <Text style={styles.dateText}>{fullDate}</Text>
+          {/* Servicio */}
+          <Text style={styles.serviceText}>Servicio: {item.service_name ?? '—'}</Text>
+
+          {/* Fecha */}
+          <Text style={styles.dateText}>{fullDate}</Text>
         </View>
 
-        {/* Botón anular */}
-        <TouchableOpacity onPress={() => cancel(item)} style={[styles.iconBtn, { backgroundColor: '#c62828' }]}>
+        {/* Botones: llamar + anular */}
+        <View style={{ flexDirection: 'row' }}>
+          <TouchableOpacity
+            disabled={!canCall}
+            onPress={() => callClient(item.customer_phone)}
+            style={[styles.iconBtn, { backgroundColor: canCall ? '#111' : '#bbb' }]}
+          >
+            <Feather name="phone" size={18} color="#fff" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => cancel(item)}
+            style={[styles.iconBtn, { backgroundColor: '#c62828', marginLeft: 8 }]}
+          >
             <Feather name="x" size={18} color="#fff" />
-        </TouchableOpacity>
-    </View>
+          </TouchableOpacity>
+        </View>
+      </View>
     );
   };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
-      <HeaderBar title="Panel del dueño" rightLabel="Salir" onRightPress={async ()=>{ await supabase.auth.signOut(); }} />
+      <HeaderBar title="Lista de clientes" rightLabel="Salir" onRightPress={async ()=>{ await supabase.auth.signOut(); }} />
       {loading ? (
         <View style={styles.center}><ActivityIndicator /><Text style={{ marginTop: 8 }}>Cargando…</Text></View>
       ) : items.length === 0 ? (
@@ -152,9 +165,15 @@ const styles = StyleSheet.create({
   },
   clientText: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#222',
     marginBottom: 2,
+  },
+  serviceText: {          // 🆕 estilo para “Servicio: …”
+    fontSize: 13,
+    color: '#444',
+    marginBottom: 4,
+    fontWeight: '600',
   },
   dateText: {
     fontSize: 12,
@@ -165,7 +184,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 10,
-    marginLeft: 12,
     alignSelf: 'flex-start',
   },
 });

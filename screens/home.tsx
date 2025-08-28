@@ -170,7 +170,7 @@ export default function Home() {
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: Math.max(insets.bottom, 8) }]}>
       <HeaderBar
-        title="Reservas Pelu"
+        title="Inicio"
         rightLabel={sessionEmail ? 'Salir' : 'Iniciar sesión'}
         onRightPress={async () => {
           if (sessionEmail) {

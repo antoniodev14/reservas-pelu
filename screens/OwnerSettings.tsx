@@ -259,7 +259,7 @@ export default function OwnerSettings() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: kbVisible ? 0 : Math.max(insets.bottom, 8) }]}>
-      <HeaderBar title="Panel del dueño" rightLabel="Salir" onRightPress={async ()=>{ await supabase.auth.signOut(); }} />
+      <HeaderBar title="Gestiones" rightLabel="Salir" onRightPress={async ()=>{ await supabase.auth.signOut(); }} />
       {loading || !biz ? (
         <View style={{ padding:16 }}>{loading ? <ActivityIndicator/> : <Text>No hay negocio asociado.</Text>}</View>
       ) : (

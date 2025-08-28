@@ -7,6 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import HeaderBar from '../components/HeaderBar';
 
 type Service = {
   id: string;
@@ -58,7 +59,7 @@ export default function OwnerServices({ navigation }: any) {
 
       if (error || !biz) { Alert.alert('Error', 'No se encontró tu negocio'); setLoading(false); return; }
 
-      navigation.setOptions({ title: `Servicios de ${biz.name ?? ''}`.trim() });
+      navigation.setOptions({ title: `Servicios`.trim() });
 
       setBusinessId(biz.id);
       setBizDefault(biz.default_duration_minutes ?? 30);
@@ -137,6 +138,7 @@ export default function OwnerServices({ navigation }: any) {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: Math.max(insets.bottom, 8) }]}>
+     <HeaderBar title="Servicios" rightLabel="Salir" onRightPress={async ()=>{ await supabase.auth.signOut(); }} />
       {loading ? (
         <View style={{ padding: 16 }}><ActivityIndicator /></View>
       ) : (
