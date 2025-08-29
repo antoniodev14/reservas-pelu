@@ -11,6 +11,8 @@ type Props = {
 
   rightLabel?: string;
   onRightPress?: () => void;
+
+  greeting?: string; // 🆕
 };
 
 export default function HeaderBar({
@@ -20,6 +22,7 @@ export default function HeaderBar({
   onLeftPress,
   rightLabel,
   onRightPress,
+  greeting
 }: Props) {
   return (
     <View style={styles.wrap}>
@@ -32,7 +35,10 @@ export default function HeaderBar({
       ) : null}
 
       {/* Título pegado a la izquierda */}
-      <Text numberOfLines={1} style={styles.title}>{title}</Text>
+      <View style={{ flex:1 }}>
+        <Text style={styles.title}>{title}</Text>
+        {greeting ? <Text style={styles.greeting}>Bienvenido, {greeting}</Text> : null}
+      </View>
 
       {/* Botón derecha solo texto (opcional) */}
       {rightLabel ? (
@@ -46,11 +52,14 @@ export default function HeaderBar({
 
 const styles = StyleSheet.create({
   wrap: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection:'row',
+    alignItems:'center',
+    justifyContent:'space-between',
+    paddingHorizontal:16,
+    paddingVertical:12,
+    borderBottomWidth:1,
+    borderBottomColor:'#eee',
+    backgroundColor:'#fff'
   },
 
   title: {
@@ -72,6 +81,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   actionSolidText: { color: '#fff', fontWeight: '700' },
+  greeting:{ marginTop:2, color:'#444', fontWeight:'700', fontSize:13 },
 
   actionBtnGhost: {
     flexDirection: 'row',

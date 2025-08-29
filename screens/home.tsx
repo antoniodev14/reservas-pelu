@@ -40,6 +40,22 @@ export default function Home() {
   const [list, setList] = useState<Business[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [fullName, setFullName] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u.user?.id;
+      if (!uid) { setFullName(null); return; }
+      const { data: p } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', uid)
+        .maybeSingle();
+      setFullName(p?.full_name ?? u.user?.email ?? null);
+    })();
+  }, []);
+
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -172,6 +188,7 @@ export default function Home() {
       <HeaderBar
         title="Inicio"
         rightLabel={sessionEmail ? 'Salir' : 'Iniciar sesión'}
+        greeting={fullName ?? undefined} 
         onRightPress={async () => {
           if (sessionEmail) {
             await supabase.auth.signOut();
